@@ -1,0 +1,204 @@
+---
+title: "Data Processing"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+date: '2023-11-28'
+---
+
+```{r, include=FALSE}
+library(dplyr)
+library(ggplot2)
+
+train_logs <- read.csv('data/train_logs.csv')
+train_scores <- read.csv('data/train_scores.csv')
+
+
+full_data <- merge(train_logs, train_scores, by = "id")
+
+# remove NULL values
+full_data <- na.omit(full_data)
+
+
+set.seed(1)
+unique_ids <- unique(full_data$id)
+train_ids <- sample(unique_ids, size = length(unique_ids) * 0.8)
+# split the dataset into training and testing sets
+train_set <- full_data[full_data$id %in% train_ids, ]
+test_set <- full_data[!full_data$id %in% train_ids, ]
+
+
+```
+
+
+```{r, include=FALSE}
+
+condensed_data <- train_set %>%
+  group_by(id) %>%
+  mutate(
+    text_change_length = nchar(as.character(text_change)),
+    time_interval = c(NA, diff(down_time)), # Time interval between events
+    cursor_movement = c(NA, diff(cursor_position)) # Movement of cursor
+  ) %>%
+  summarise(
+    total_events = n(),
+    total_input_events = sum(activity == "Input"),
+    total_nonproduction_events = sum(activity == "Nonproduction"),
+    total_remove_cut_events = sum(activity == "Remove/Cut"),
+    total_paste_events = sum(activity == "Paste"),
+    total_replace_events = sum(activity == "Replace"),
+    avg_action_time = mean(action_time),
+    max_action_time = max(action_time),
+    min_action_time = min(action_time),
+    sd_action_time = sd(action_time),
+    final_word_count = max(word_count),
+    avg_text_change_length = mean(text_change_length, na.rm = TRUE),
+    total_text_added = sum(text_change_length[activity %in% c("Input", "Paste")], na.rm = TRUE),
+    total_text_removed = sum(text_change_length[activity %in% c("Remove/Cut", "Replace")], na.rm = TRUE),
+    avg_time_interval = mean(time_interval, na.rm = TRUE),
+    max_cursor_movement = max(cursor_movement, na.rm = TRUE),
+    avg_cursor_movement = mean(cursor_movement, na.rm = TRUE),
+    sd_cursor_movement = sd(cursor_movement, na.rm = TRUE)
+  ) %>%
+  left_join(train_scores, by = "id")
+
+head(condensed_data)
+```
+
+Histogram of Essay Scores
+```{r, echo=FALSE}
+ggplot(train_scores, aes(x = score)) +
+  geom_histogram(binwidth = 1, fill = "blue", color = "black") +
+  ggtitle("Distribution of Essay Scores") +
+  xlab("Score") +
+  ylab("Frequency")
+
+```
+From the plot, we see the distribution is left-skewed, showing that very few essays are rated as either exceptionally poor or excellent.
+
+
+Boxplots for Each Activity Type vs. Scores
+```{r, echo=FALSE}
+library(tidyr)
+
+condensed_data %>%
+  gather(key = "activity_type", value = "count", 
+         total_input_events, total_nonproduction_events, 
+         total_remove_cut_events, total_paste_events, 
+         total_replace_events) %>%
+  ggplot(aes(x = activity_type, y = count, fill = activity_type)) +
+  geom_boxplot() +
+  facet_wrap(~ score) +
+  ggtitle("Boxplot of Activity Types vs. Scores") +
+  xlab("Activity Type") +
+  ylab("Count") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+The median counts for most activities seem to increase with the scores up to a certain point, suggesting a correlation between the amount of activity and higher scores.
+
+Some activities, like "total_input_events" and "total_replace_events," have wide variations at higher scores, indicating that these activities are more variable for essays with higher scores.
+
+"Total_remove_cut_events" and "total_nonproduction_events" appear to have a more stable count across different scores, suggesting these activities may not be as strongly correlated with the scores as others.
+
+
+Scatter Plot of Word Count vs. Score: if there's a relationship between the final word count of the essay and its score.
+```{r, echo=FALSE}
+ggplot(condensed_data, aes(x = final_word_count, y = score)) +
+  geom_point(aes(color = score)) +
+  ggtitle("Word Count vs. Score") +
+  xlab("Final Word Count") +
+  ylab("Score")
+
+```
+There is a potential correlation between longer essays and higher scores. 
+
+Time Interval vs. Score: understand if there's any pattern in the average time intervals between events for different scores.
+```{r, echo=FALSE}
+ggplot(condensed_data, aes(x = avg_time_interval, y = score)) +
+  geom_point(aes(color = score)) +
+  ggtitle("Average Time Interval between Events vs. Score") +
+  xlab("Average Time Interval (ms)") +
+  ylab("Score")
+
+
+```
+The scatter plot may suggest that shorter average time intervals between events are associated with higher scores, but this isn't a super strong correlation
+
+
+Bar Plot of Average Scores for Each Activity: how the average essay score varies with different levels of activities like input, paste, remove/cut, etc.
+```{r, include=FALSE}
+condensed_data %>%
+  gather(key = "activity_type", value = "count", 
+         total_input_events, total_nonproduction_events, 
+         total_remove_cut_events, total_paste_events, 
+         total_replace_events) %>%
+  group_by(activity_type) %>%
+  summarise(average_score = mean(score)) %>%
+  ggplot(aes(x = activity_type, y = average_score, fill = activity_type)) +
+  geom_bar(stat = "identity") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  ggtitle("Average Scores for Each Activity Type") +
+  xlab("Activity Type") +
+  ylab("Average Score")
+
+
+```
+
+
+
+Density Plot of Action Time: how different durations of actions relate to essay scores.
+```{r, echo=FALSE}
+ggplot(condensed_data, aes(x = avg_action_time, fill = factor(score))) +
+  geom_density(alpha = 0.5) +
+  ggtitle("Density Plot of Average Action Time by Score") +
+  xlab("Average Action Time") +
+  ylab("Density")
+```
+There seems to be subtle indication that the highest scoring categories tend to have slightly quicker average action times. 
+
+Histogram of Cursor Movements: distribution of cursor movements for different scores.
+```{r, echo=FALSE}
+ggplot(condensed_data, aes(x = avg_cursor_movement, fill = factor(score))) +
+  geom_histogram(bins = 30, alpha = 0.5) +
+  ggtitle("Histogram of Average Cursor Movements by Score") +
+  xlab("Average Cursor Movement") +
+  ylab("Frequency")
+
+```
+The visual suggests that there may be an optimal range of average cursor movement that is associated with higher scores, while both very low and very high cursor movements are less frequent among higher-scoring activities. 
+
+```{r, echo=FALSE}
+library(corrplot)
+library(dplyr)
+
+cor_matrix <- cor(condensed_data[, -1], use = "complete.obs")
+corrplot(cor_matrix, method = "circle")
+```
+
+There's a decent amount of collinearity. We will remove some variables that are kind of redundant. 
+
+
+Each of these predictors can provide insights into the writing process of each essay. The key is to understand how these behaviors correlate with essay quality as judged by the scores.
+
+**total_events**: This is the total number of input events for each essay. A higher number of events might indicate more effort, which could be associated with higher quality writing.
+
+**total_nonproduction_events**: These events don't alter the text. A high count could imply extensive planning, which might be a trait of careful writing.
+
+**total_remove_cut_events**: The number of events where text is removed. A higher number might suggest significant editing and refining of the essay, correlating with better content quality.
+
+**total_paste_events**: Indicates the number of paste actions. This could reflect the use of external references.
+
+**total_replace_events**: Shows how often text is replaced. Frequent replacements might indicate refinement and improvement of the essay's content and structure.
+
+**total_move_events**: Counts events of moving text sections. This might be indicative of significant restructuring, suggesting an effort to improve the essay's flow and coherence.
+
+**avg_action_time, max_action_time, min_action_time, sd_action_time**: These metrics give insights into the duration and variability of actions. Longer action times might indicate more thoughtful writing, while a higher standard deviation could suggest varying writing speeds, possibly reflecting different stages of the writing process.
+
+**final_word_count**: The word count of the essay after the last event. Generally, longer essays might cover more content. This metric helps capture the essay's scope.
+
+**avg_text_change_length, total_text_removed**: These features relate to the extent of text changes. Large amounts of text change might indicate significant editing and refinement.
+
+**max_cursor_movement, avg_cursor_movement, sd_cursor_movement**: These metrics measure how much the cursor position changes, reflecting the extent of navigation and editing. Significant movement might indicate active organization and editing of the essay.
+
