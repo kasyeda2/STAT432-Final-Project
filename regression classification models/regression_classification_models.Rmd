@@ -1,0 +1,402 @@
+---
+title: "Regression/Classification Models"
+# output: pdf_document
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 2
+    keep_tex: true
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '2'
+date: "2023-12-07"
+---
+
+```{r}
+# import train and test data
+train_data = read.csv("data/condensed_train_data.csv")
+test_data = read.csv("data/condensed_test_data.csv")
+
+# X is just an index, remove it
+train_data <- subset(train_data, select = -X)
+test_data <- subset(test_data, select = -X)
+
+
+head(train_data)
+head(test_data)
+
+dim(train_data)
+dim(test_data)
+```
+```{r}
+train_x = train_data[, 2:16]
+train_y = train_data[, 17]
+
+test_x = test_data[, 2:16]
+test_y = test_data[, 17]
+```
+
+We will start with elastic net regression, to do both feature selection and address collinearity issues that may exist within the data.
+```{r}
+set.seed(432)
+library(glmnet)
+
+# Grid of alpha values to try
+# alpha_values <- c(0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1)
+alpha_values <- seq(0, 1, by = 0.01)
+
+
+# Create an empty matrix to store results
+results <- matrix(NA, nrow = length(alpha_values), ncol = 2, dimnames = list(NULL, c("Alpha", "RMSE")))
+
+# Perform grid search
+for (i in seq_along(alpha_values)) {
+  alpha <- alpha_values[i]
+  lasso.fit <- cv.glmnet(data.matrix(train_x), train_y, alpha = alpha)
+  
+  # Find the index of the lambda that minimizes CV error
+  min_lambda_index <- which.min(lasso.fit$cvm)
+  
+  # Optimal lambda and corresponding RMSE
+  optimal_lambda <- lasso.fit$lambda[min_lambda_index]
+  predictions <- predict(lasso.fit, newx = data.matrix(test_x), s = optimal_lambda)
+  rmse <- sqrt(mean((predictions - test_y)^2))
+  
+  # Store results
+  results[i, ] <- c(alpha, rmse)
+}
+
+# Find the row with the minimum RMSE
+min_rmse_row <- which.min(results[, "RMSE"])
+
+# Optimal alpha and lambda
+optimal_alpha <- results[min_rmse_row, "Alpha"]
+optimal_lambda <- lasso.fit$lambda[which.min(lasso.fit$cvm)]
+
+# Print optimal values
+cat("Optimal Alpha:", optimal_alpha, "\n")
+cat("Optimal Lambda:", optimal_lambda, "\n")
+cat("Optimal RMSE:", results[min_rmse_row, "RMSE"], "\n")
+```
+As we can see, a the values alpha = 0.98, lambda = 0.002004471 return the optimal RMSE for the elastic net models, with an RMSE = 0.7546587 
+
+```{r}
+# Assuming elastic_net_fit is your fitted Elastic Net model
+elastic_net_fit <- cv.glmnet(data.matrix(train_data[, 2:16]), train_data[, 17], alpha = 0.98)
+
+# Get coefficients for the optimal lambda
+optimal_lambda <- 0.002004471 
+
+coefficients <- coef(elastic_net_fit, s = optimal_lambda)
+
+# Print or inspect the coefficients
+print(coefficients)
+
+order(abs(coefficients), decreasing = TRUE)
+rownames(coefficients)[order(abs(coefficients), decreasing = TRUE)]
+```
+
+As we can see from the coefficient output, the elastic net model removed the variables "sd_action_time" and "max_cursor_movement" indicating that they may not be important for predicting the score of the row. Noting the largest coefficients by magnitude, we note that the variables "avg_text_change_length", "avg_cursor_movement", "min_action_time" seem important for predicting the score.
+
+
+
+We will now try k-nearest neighbors
+```{r}
+set.seed(432)
+
+# "1-nearest neighbor" regression using kknn package
+library(kknn)
+knn.fit = kknn(y ~ ., train = data.frame(x = train_data[, 2:16], y = train_data[, 17]), 
+               test = data.frame(x = test_data[, 2:16]),
+               k = 1, kernel = "rectangular")
+test.pred = knn.fit$fitted.values
+
+
+
+# Calculate the root mean squared error (RMSE)
+rmse <- sqrt(mean((test.pred - test_y)^2))
+
+# Print or use the RMSE
+cat("Root Mean Squared Error (RMSE):", rmse, "\n")
+```
+
+```{r}
+library(kknn)
+
+set.seed(432)
+
+# Specify a range of k values to test
+k_values <- seq(1, 200, by = 1)  # Adjust the range as needed
+
+# Initialize variables to store results
+rmse_values <- numeric(length(k_values))
+
+# Loop over different k values
+for (i in seq_along(k_values)) {
+  # Fit KNN model
+  knn_fit <- kknn(y ~ ., train = data.frame(x = train_x, y = train_y), 
+                  test = data.frame(x = test_x),
+                  k = k_values[i])
+  
+  # Make predictions
+  test_pred <- knn_fit$fitted.values
+  
+  # Calculate RMSE
+  residuals <- test_pred - test_y
+  mse <- mean(residuals^2)
+  rmse_values[i] <- sqrt(mse)
+}
+
+k_values
+rmse_values
+# want to plot rmse vs k_values
+plot(k_values, rmse_values)
+
+# Find the k that gives the lowest RMSE
+optimal_k <- k_values[which.min(rmse_values)]
+
+# Print results
+cat("Optimal K:", optimal_k, "\n")
+cat("Minimum RMSE:", min(rmse_values), "\n")
+```
+We see that the optimal k = 87 returns the lowest RMSE for the k-nearest neighbors regression with RMSE = 0.7528342.
+
+We will now try random forest.
+```{r}
+set.seed(432)
+
+# fit random forests with a selected tuning
+library(randomForest)
+rf.fit = randomForest(train_x, train_y)
+
+summary(rf.fit)
+# ntree = 500
+# sampsize = ?
+# mtry = 5
+# nodesize ? 
+
+# Assuming 'test_x' contains your test features and 'test_y' contains your test target variable
+
+# Make predictions on the test data
+rf_predictions <- predict(rf.fit, newdata = test_x)
+
+# Calculate the root mean squared error (RMSE)
+rmse <- sqrt(mean((rf_predictions - test_y)^2))
+
+# Print or use the RMSE
+cat("Root Mean Squared Error (RMSE):", rmse, "\n")
+```
+Random forest has the best RMSE so far, with an RMSE = 0.6985063.
+
+
+```{r}
+library(randomForest)
+
+# Set seed for reproducibility
+set.seed(432)
+
+# Define candidate values for parameters
+ntree_values <- c(400, 500, 600, 700, 800)
+sampsize_values <- c(90, 100, 110, 120, 130)
+mtry_values <- c(12, 13, 14, 15)
+nodesize_values <- c(1, 2, 3, 4, 5)
+
+# Initialize variables to store optimal values
+best_rmse <- Inf
+optimal_ntree <- NULL
+optimal_sampsize <- NULL
+optimal_mtry <- NULL
+optimal_nodesize <- NULL
+best_model <- NULL
+
+# Iterate over parameter combinations
+for (ntree in ntree_values) {
+  for (sampsize in sampsize_values) {
+    for (mtry in mtry_values) {
+      for (nodesize in nodesize_values) {
+        
+        # Train the model
+        rf_model <- randomForest(train_y ~ ., data = train_x,
+                                  ntree = ntree, mtry = mtry,
+                                  sampsize = sampsize, nodesize = nodesize)
+        
+        # Make predictions on the test data
+        rf_predictions <- predict(rf_model, newdata = test_x)
+        
+        # Calculate RMSE
+        rmse <- sqrt(mean((rf_predictions - test_y)^2))
+        
+        # Check if current combination improves RMSE
+        if (rmse < best_rmse) {
+          best_rmse <- rmse
+          optimal_ntree <- ntree
+          optimal_sampsize <- sampsize
+          optimal_mtry <- mtry
+          optimal_nodesize <- nodesize
+          best_model <- rf_model
+        }
+      }
+    }
+  }
+}
+
+# Print or use the optimal values
+cat("Optimal ntree:", optimal_ntree, "\n")
+cat("Optimal sampsize:", optimal_sampsize, "\n")
+cat("Optimal mtry:", optimal_mtry, "\n")
+cat("Optimal nodesize:", optimal_nodesize, "\n")
+cat("Optimal Root Mean Squared Error (RMSE):", best_rmse, "\n")
+```
+As we can see from our gridsearch, the best model has ntree=700, sampsize=110, mtry=13, nodesize=1, with RMSE = 0.6829625.
+
+```{r}
+best_model$importance
+order(best_model$importance, decreasing = TRUE)
+
+rownames(best_model$importance)[order(best_model$importance, decreasing = TRUE)]
+```
+From the variable importance we see that the variables "final_word_count", "total_events", and "max_cursor_movement" are important in predicting the outcome in the random forest model.
+
+
+
+
+We will now try Support Vector Machine classification.
+```{r}
+set.seed(432)
+
+library(e1071)
+
+# Assuming 'train_data' contains your training data with an ordinal target variable
+# Replace 'target' with the actual column name of your target variable
+
+# Fit an SVM regression model
+svm_model <- svm(as.factor(train_y) ~ ., data = train_x, kernel = "linear", type = "C-classification", cost = 1)
+
+# Make predictions on new data
+predictions <- predict(svm_model, newdata = test_x)
+
+
+# Evaluate the model's performance as needed
+# Calculate the confusion matrix
+conf_matrix <- table(Actual = test_y, Predicted = predictions)
+
+# Calculate the RMSE
+rmse <- sqrt(mean((as.numeric(predictions) - test_y)^2))
+
+# Print the confusion matrix
+print("Confusion Matrix:")
+print(conf_matrix)
+
+accuracy = sum(predictions == test_y) / length(test_y)
+cat("Accuracy:", accuracy, "\n")
+
+# Print the RMSE
+cat("Root Mean Squared Error (RMSE):", rmse, "\n")
+```
+
+```{r}
+set.seed(432)
+
+library(e1071)
+
+# Assuming 'train_data' and 'test_data' contain your training and testing data
+
+# Define the values of cost to try
+cost_values <- c(1, 2,3,4,5, 10, 50, 100)
+
+# Initialize a vector to store RMSE values
+rmse_values <- numeric(length(cost_values))
+
+# Fit SVM models with different cost values
+for (i in seq_along(cost_values)) {
+  cost <- cost_values[i]
+  
+  # Fit the SVM model
+  svm_model <- svm(as.factor(train_y) ~ ., data = train_x, kernel = "linear", cost = cost)
+  
+  # Make predictions on the test data
+  predictions <- predict(svm_model, newdata = test_x)
+  
+  # Calculate RMSE
+  rmse <- sqrt(mean((as.numeric(predictions) - test_y)^2))
+  
+  # Store the RMSE value
+  rmse_values[i] <- rmse
+  
+  # Print or save other information as needed
+  cat("Cost:", cost, " - RMSE:", rmse, "\n")
+  
+  # Assuming 'test_data' contains your testing data with 'target_class' as the true class
+  
+  # Calculate accuracy
+  accuracy <- sum(predictions == test_y) / length(test_y)
+  
+  # Print the accuracy
+  cat("Accuracy:", accuracy, "\n")
+}
+
+# Find the optimal cost value
+optimal_cost <- cost_values[which.min(rmse_values)]
+cat("Optimal Cost:", optimal_cost, "\n")
+
+```
+As we can see from the output, the optimal cost = 1, with an RMSE = 3.898977. What is interesting to note is that even though cost=10 has a higher RMSE, it also has better classification accuracy.
+
+
+SVM Regression
+```{r}
+set.seed(432)
+
+library(e1071)
+
+# Assuming 'train_data' and 'test_data' contain your training and testing data
+
+# Define the values of cost to try
+cost_values <- c(1, 30, 50, 70, 75, 80, 100)
+
+# Initialize a vector to store RMSE values
+rmse_values <- numeric(length(cost_values))
+
+# Fit SVM models with different cost values
+for (i in seq_along(cost_values)) {
+  cost <- cost_values[i]
+  
+  # Fit the SVM model
+  svm_model <- svm(train_y ~ ., data = train_x, kernel = "linear", cost = cost)
+  
+  # Make predictions on the test data
+  predictions <- predict(svm_model, newdata = test_x)
+  
+  # Calculate RMSE
+  rmse <- sqrt(mean((predictions - test_y)^2))
+  
+  # Store the RMSE value
+  rmse_values[i] <- rmse
+  
+  # Print or save other information as needed
+  cat("Cost:", cost, " - RMSE:", rmse, "\n")
+  
+  # Assuming 'test_data' contains your testing data with 'target_class' as the true clas
+}
+
+# Find the optimal cost value
+optimal_cost <- cost_values[which.min(rmse_values)]
+cat("Optimal Cost:", optimal_cost, "\n")
+optimal_rmse <- min(rmse_values)
+cat("Optimal RMSE:", optimal_rmse, "\n")
+```
+As we can see, SVM regression returns a much better RMSE = 0.7580726 with cost = 75 than SVM for classification.
+
+```{r}
+models = c("elastic net", "k nearest neighbors", "random forests", "svm classification", "svm regression")
+rmse_values = c(0.7546587, 0.7528342, 0.6829625, 3.898977, 0.7580726)
+
+rmse_table = data.frame(Model = models, RMSE = rmse_values)
+rmse_table
+
+
+# sorted order
+rmse_table[order(rmse_table$RMSE), ]
+```
+
